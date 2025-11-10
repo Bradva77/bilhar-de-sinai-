@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Bilhar de Sinai">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <title>Bilhar de Sinai — PWA</title>
+  <style>
+    html, body { margin:0; padding:0; background:#0b0f14; color:#e8eef5; font-family: -apple-system, system-ui, Segoe UI, Roboto, sans-serif; height:100%; }
+    .wrap { display:flex; flex-direction:column; height:100%; }
+    header { padding:12px 16px; background:#0d131b; border-bottom:1px solid #1b2430; }
+    h1 { margin:0; font-size:17px; }
+    main { flex:1; display:flex; flex-direction:column; gap:10px; padding:10px; }
+    .card { background:#0d131b; border:1px solid #1b2430; border-radius:12px; padding:10px; }
+    canvas { width:100%; height:55vh; background:#0b1118; border:1px solid #1b2430; border-radius:12px; }
+    label { font-size:12px; color:#9fb3c8; }
+    input[type=range] { width:100%; }
+    .row { display:flex; gap:10px; align-items:center; }
+    .row > div { flex:1; }
+    .buttons { display:flex; gap:8px; }
+    button { background:#162030; color:#e8eef5; border:1px solid #243247; padding:10px 12px; border-radius:10px; font-weight:600; }
+    button.primary { background:#4da3ff; color:#021220; }
+    .metrics { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+    .metric { background:#0b1118; border:1px solid #1b2430; border-radius:10px; padding:8px; }
+    .lab { font-size:11px; color:#9fb3c8; }
+    .val { font-size:18px; font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Bilhar de Sinai — PWA</h1>
+  </header>
+  <main>
+    <div class="card">
+      <canvas id="view" width="900" height="600"></canvas>
+    </div>
+    <div class="card">
+      <div class="row">
+        <div>
+          <label>Raio R: <span id="rVal">0.30</span></label>
+          <input id="r" type="range" min="0.10" max="0.49" step="0.01" value="0.30">
+        </div>
+        <div>
+          <label>Partículas: <span id="nVal">120</span></label>
+          <input id="n" type="range" min="1" max="500" step="1" value="120">
+        </div>
+        <div>
+          <label>Colisões/frame: <span id="cpfVal">1</span></label>
+          <input id="cpf" type="range" min="1" max="8" step="1" value="1">
+        </div>
+      </div>
+      <div class="buttons" style="margin-top:8px;">
+        <button id="start" class="primary">Iniciar</button>
+        <button id="pause">Pausar</button>
+        <button id="reset">Resetar</button>
+        <button id="seed">Nova semente</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="metrics">
+        <div class="metric"><div class="lab">κ̄(n)</div><div class="val" id="kappa">—</div></div>
+        <div class="metric"><div class="lab">λ̄(n)</div><div class="val" id="lambda">—</div></div>
+        <div class="metric"><div class="lab">Colisões</div><div class="val" id="coll">0</div></div>
+        <div class="metric"><div class="lab">FPS</div><div class="val" id="fps">—</div></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+// Same simulation core as before, trimmed to keep a single file PWA.
+(function(){
+  function rng(seed){ let t=seed>>>0; return function(){ t+=0x6D2B79F5; let r=Math.imul(t^t>>>15,1|t); r^=r+Math.imul(r^r>>>7,61|r); return ((r^r>>>14)>>>0)/4294967296; }; }
+  const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
+  const norm=v=>Math.hypot(v[0],v[1]);
+  const normalize=v=>{const n=norm(v); return n?[v[0]/n,v[1]/n]:[0,0];};
+  const dot=(a,b)=>a[0]*b[0]+a[1]*b[1];
+  const reflect=(v,n)=>{const d=dot(v,n); return [v[0]-2*d*n[0], v[1]-2*d*n[1]];};
+
+  const cv=document.getElementById('view'), ctx=cv.getContext('2d');
+  const rS=document.getElementById('r'), nS=document.getElementById('n'), cpfS=document.getElementById('cpf');
+  const rVal=document.getElementById('rVal'), nVal=document.getElementById('nVal'), cpfVal=document.getElementById('cpfVal');
+  const startB=document.getElementById('start'), pauseB=document.getElementById('pause'), resetB=document.getElementById('reset'), seedB=document.getElementById('seed');
+  const kapEl=document.getElementById('kappa'), lamEl=document.getElementById('lambda'), collEl=document.getElementById('coll'), fpsEl=document.getElementById('fps');
+
+  let R=parseFloat(rS.value), N=parseInt(nS.value,10), CPF=parseInt(cpfS.value,10);
+  let running=false, seed=(Math.random()*1e9)|0, rand=rng(seed);
+  let X=[], V=[], kappaPrev=[], kapHist=[], sumKap=0, coll=0;
+  let last = performance.now(), frames=0;
+
+  function sampleIC(){
+    X=[]; V=[]; kappaPrev=[]; kapHist=[]; sumKap=0; coll=0;
+    for(let i=0;i<N;i++){
+      const s=rand()*2*Math.PI*R, a=rand()*2-1, phi=Math.asin(clamp(a,-1,1));
+      const theta=s/R, pos=[R*Math.cos(theta), R*Math.sin(theta)];
+      const nvec=normalize(pos.slice()), tvec=[-nvec[1], nvec[0]];
+      const v=normalize([Math.cos(phi)*nvec[0] + Math.sin(phi)*tvec[0], Math.cos(phi)*nvec[1] + Math.sin(phi)*tvec[1]]);
+      X.push(pos); V.push(v); kappaPrev.push(1.0);
+    }
+  }
+  function nextHit(x,v,R,sr){
+    const eps=1e-9; let bestT=1/0, best=null;
+    for(let m=-sr;m<=sr;m++){ for(let n=-sr;n<=sr;n++){
+      const cx=m, cy=n, dx=x[0]-cx, dy=x[1]-cy, b=2*(dx*v[0]+dy*v[1]), c=dx*dx+dy*dy-R*R;
+      const disc=b*b-4*c; if(disc<=0) continue;
+      const sd=Math.sqrt(disc); const t1=(-b-sd)/2, t2=(-b+sd)/2;
+      if(t1>eps && t1<bestT){ bestT=t1; best={t:t1,cx,cy}; }
+      if(t2>eps && t2<bestT){ bestT=t2; best={t:t2,cx,cy}; }
+    }}
+    return best;
+  }
+  function step(){
+    const sr=3; const M=X.length;
+    let newX=[], newV=[], newK=[], sum=0, valids=0;
+    for(let i=0;i<M;i++){
+      const hit=nextHit(X[i],V[i],R,sr) || nextHit(X[i],V[i],R,6);
+      if(!hit) continue;
+      const t=hit.t, hx=X[i][0]+t*V[i][0], hy=X[i][1]+t*V[i][1];
+      const nvec=normalize([(hx-hit.cx)/R, (hy-hit.cy)/R]);
+      const vOut=normalize(reflect(V[i],nvec));
+      const cphi=clamp(dot(vOut,nvec),-1,1);
+      const k = kappaPrev[i] + 1.0/t + 1.0/(2*R*clamp(cphi,1e-12,1));
+      newX.push([hx-hit.cx, hy-hit.cy]); newV.push(vOut); newK.push(k); sum+=k; valids++;
+    }
+    if(valids===0) return;
+    X=newX; V=newV; kappaPrev=newK;
+    const kMean=sum/valids; kapHist.push(kMean); sumKap+=kMean; coll+=valids;
+  }
+  function draw(){
+    const W=cv.width, H=cv.height, scale=Math.min(W,H)*0.35, cx=W/2, cy=H/2;
+    function wx(u){return cx+u*scale;} function wy(v){return cy-v*scale;}
+    ctx.clearRect(0,0,W,H);
+    // circles 3x3
+    ctx.strokeStyle='#203043'; ctx.lineWidth=1;
+    for(let m=-1;m<=1;m++){ for(let n=-1;n<=1;n++){
+      ctx.beginPath(); ctx.arc(wx(m), wy(n), R*scale, 0, Math.PI*2); ctx.stroke();
+    }} 
+    // particles
+    ctx.fillStyle='#4da3ff';
+    const rPix=Math.max(2, Math.min(4, R*scale*0.08));
+    for(let i=0;i<X.length;i++){
+      const p=X[i];
+      for(let dx of [-1,0,1]) for(let dy of [-1,0,1]){
+        ctx.beginPath(); ctx.arc(wx(p[0]+dx), wy(p[1]+dy), rPix, 0, Math.PI*2); ctx.fill();
+      }
+    }
+  }
+  function loop(t){
+    if(running){ for(let k=0;k<CPF;k++) step(); }
+    draw();
+    // fps
+    frames++; if(t-last>500){ const fps=Math.round(frames/((t-last)/1000)); fpsEl.textContent=fps; frames=0; last=t; }
+    // metrics
+    rVal.textContent=R.toFixed(2); nVal.textContent=String(X.length); cpfVal.textContent=String(CPF);
+    const k = kapHist.length? kapHist[kapHist.length-1]: NaN;
+    const l = kapHist.length? (sumKap/kapHist.length): NaN;
+    kapEl.textContent = isFinite(k)? k.toFixed(5): '—';
+    lamEl.textContent = isFinite(l)? l.toFixed(5): '—';
+    collEl.textContent = coll.toLocaleString('pt-BR');
+    requestAnimationFrame(loop);
+  }
+  // controls
+  rS.addEventListener('input', ()=>{ R=parseFloat(rS.value); });
+  nS.addEventListener('change', ()=>{ N=parseInt(nS.value,10); sampleIC(); });
+  cpfS.addEventListener('input', ()=>{ CPF=parseInt(cpfS.value,10); });
+  startB.addEventListener('click', ()=> running=true);
+  pauseB.addEventListener('click', ()=> running=false);
+  resetB.addEventListener('click', ()=> sampleIC());
+  seedB.addEventListener('click', ()=>{ seed=(Math.random()*1e9)|0; rand=rng(seed); sampleIC(); });
+  // init
+  sampleIC(); draw(); requestAnimationFrame(loop);
+  // PWA SW
+  if('serviceWorker' in navigator){
+    window.addEventListener('load', ()=> navigator.serviceWorker.register('./service-worker.js'));
+  }
+})();
+</script>
+</body>
+</html>
